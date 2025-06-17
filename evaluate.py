@@ -6,10 +6,16 @@ from train import load_model
 
 
 def evaluate_model(ticker, model, df_eval, initial_balance=10_000):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[{ticker}] Evaluando modelo en dispositivo: {device}")
+
+    model.to(device)
+    model.eval()
+
     env = TradingEnv(df=df_eval, window_size=20,
                      initial_balance=initial_balance)
     obs, info = env.reset()
-    state = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+    state = torch.tensor(obs, dtype=torch.float32).unsqueeze(0).to(device)
 
     done = False
     portfolio_values = [env.total_asset]
@@ -32,8 +38,9 @@ def evaluate_model(ticker, model, df_eval, initial_balance=10_000):
         daily_actions.append(action)
         portfolio_values.append(env.total_asset)
 
-        state = None if done else torch.tensor(
-            obs, dtype=torch.float32).unsqueeze(0)
+        if not done:
+            state = torch.tensor(
+                obs, dtype=torch.float32).unsqueeze(0).to(device)
 
     final_balance = env.balance
     final_asset = env.total_asset

@@ -15,13 +15,18 @@ Transition = collections.namedtuple(
 def train_dqn_for_ticker(
     ticker, df_train, window_size, initial_balance, max_episodes=config.MAX_EPISODES
 ):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[{ticker}] Usando dispositivo: {device}")
+
     env = TradingEnv(df=df_train, window_size=window_size,
                      initial_balance=initial_balance)
     n_actions = env.action_space.n  # type: ignore
     input_dim = 5
 
-    q_network = LSTM_QNetwork(input_dim=input_dim, output_dim=n_actions)
-    target_network = LSTM_QNetwork(input_dim=input_dim, output_dim=n_actions)
+    q_network = LSTM_QNetwork(
+        input_dim=input_dim, output_dim=n_actions).to(device)
+    target_network = LSTM_QNetwork(
+        input_dim=input_dim, output_dim=n_actions).to(device)
     target_network.load_state_dict(q_network.state_dict())
     target_network.eval()
 
@@ -38,7 +43,7 @@ def train_dqn_for_ticker(
 
     for episode in range(max_episodes):
         obs, info = env.reset()
-        state = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+        state = torch.tensor(obs, dtype=torch.float32).unsqueeze(0).to(device)
         episode_reward = 0
 
         for step in range(config.MAX_STEPS_PER_EPISODE):
@@ -46,26 +51,24 @@ def train_dqn_for_ticker(
 
             if random.random() < epsilon:
                 action = torch.tensor(
-                    [[env.action_space.sample()]], dtype=torch.long
-                )
+                    [[env.action_space.sample()]], dtype=torch.long).to(device)
             else:
                 with torch.no_grad():
                     q_values = q_network(state)
                     action = q_values.max(1)[1].view(1, 1)
 
             next_obs, reward, terminated, truncated, info = env.step(
-                action.item()
-            )
+                action.item())
             done = terminated or truncated
             episode_reward += reward
 
-            reward_tensor = torch.tensor([reward], dtype=torch.float32)
+            reward_tensor = torch.tensor(
+                [reward], dtype=torch.float32).to(device)
             next_state = (
-                None
-                if done
-                else torch.tensor(next_obs, dtype=torch.float32).unsqueeze(0)
+                None if done else torch.tensor(
+                    next_obs, dtype=torch.float32).unsqueeze(0).to(device)
             )
-            done_tensor = torch.tensor([done], dtype=torch.float32)
+            done_tensor = torch.tensor([done], dtype=torch.float32).to(device)
 
             replay_buffer.append(
                 Transition(state, action, reward_tensor,
@@ -80,19 +83,21 @@ def train_dqn_for_ticker(
                 non_final_mask = torch.tensor(
                     tuple(s is not None for s in batch.next_state),
                     dtype=torch.bool,
-                )
+                ).to(device)
+
                 non_final_next_states = torch.cat(
                     [s for s in batch.next_state if s is not None], dim=0
-                )
+                ).to(device)
 
-                state_batch = torch.cat(batch.state, dim=0)
-                action_batch = torch.cat(batch.action)
-                reward_batch = torch.cat(batch.reward)
+                state_batch = torch.cat(batch.state, dim=0).to(device)
+                action_batch = torch.cat(batch.action).to(device)
+                reward_batch = torch.cat(batch.reward).to(device)
 
                 state_action_values = q_network(
                     state_batch).gather(1, action_batch).squeeze(1)
 
-                next_state_values = torch.zeros(config.BATCH_SIZE)
+                next_state_values = torch.zeros(
+                    config.BATCH_SIZE, device=device)
                 with torch.no_grad():
                     online_next_q_values = q_network(non_final_next_states)
                     online_best_next_actions = online_next_q_values.max(1)[
@@ -104,9 +109,8 @@ def train_dqn_for_ticker(
                     ).squeeze(1)
                     next_state_values[non_final_mask] = selected_target_next_q_values
 
-                expected_state_action_values = reward_batch + (
-                    config.GAMMA * next_state_values
-                )
+                expected_state_action_values = reward_batch + \
+                    (config.GAMMA * next_state_values)
 
                 loss = loss_fn(state_action_values,
                                expected_state_action_values)
